@@ -1,4 +1,13 @@
 BeautifulSoup==3.2.1
+Mako==1.0.4
+MarkupSafe==0.23
+PyYAML==3.11
+SQLAlchemy==1.0.14
+alembic==0.8.6
 beautifulsoup4==4.4.1
-click==6.6
+dataset==0.6.4
+normality==0.2.4
+python-editor==1.0.1
+requests==2.10.0
+six==1.10.0
 wsgiref==0.1.2
