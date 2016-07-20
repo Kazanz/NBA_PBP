@@ -1,8 +1,7 @@
 # NBA_PBP
-Extracts real-time NBA boxscores and calculates each players uPER at that point in the game.
 
 This is a proof of concept.  We can scrape real-time player scores of nba games and calculate the unadjusted player effeciency rating (uPER)
-of each player at each moment in the game.
+of each player at each moment in the game as well as obtaining this data in realtime.
 
 # Usage
 
