@@ -1,8 +1,8 @@
 # NBA_PBP
 Extracts real-time NBA boxscores and calculates each players uPER at that point in the game.
 
-This is a proff of concept.  We can scrape real-time player scores of nba games and calculate the unadjusted player effeciency rating (uPER)
-of each player at that time in the game.
+This is a proof of concept.  We can scrape real-time player scores of nba games and calculate the unadjusted player effeciency rating (uPER)
+of each player at each moment in the game.
 
 # Usage
 
@@ -15,13 +15,13 @@ of each player at that time in the game.
 ### Database connection
 
 By default this will connect to/create a sqlite3 `demo.db` database in the current working directory.
-You can override this by settings the `NBA_DB_URI` environment variable.  *May require additinoal packages or drivers*.
+You can override this functionality by setting the `NBA_DB_URI` environment variable.  *May require additional packages or drivers*.
 
 Ex: `export NBA_DB_URI="mysql://user:pass@host/db"`
 
 ## Realtime data
 
-This currently writes the realtime boxscore and uPER of each player data from the end of game 7 of the NBA finals between Cleveland and Goldenstate
+This currently writes the realtime boxscore and uPER of each player from the end of game 7 of the NBA finals between Cleveland and Goldenstate
 to the `PER_data` table.
 
 1. `python realtime.py`
