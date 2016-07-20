@@ -33,6 +33,7 @@ over the last decade. *It would take two lines of code, but would take a while, 
 
 `python playbyplay.py`
 
-*Note: This still does not acquire players minutes at that point in the game so the uPER is not quite accurate.
-I need a slightly more complicated algorithm to extract that info from the play-by-play
-but it shouldn't take more than a couple hours.*
+
+## TODO
+
+- Finish up `playbyplay.py` with an intelligent player minutes calculator.
