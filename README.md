@@ -14,7 +14,7 @@ Additionally it two performance measures for each player: **Unadjusted Player Ef
 ### Database connection
 
 By default this will connect to/create a sqlite3 `demo.db` database in the current working directory.
-You can override this functionality by setting the `NBA_DB_URI` environment variable.  *May require additional packages or drivers*.
+You can override this functionality by setting the `NBA_DB_URI` environment variable.
 
 Ex: `export NBA_DB_URI="mysql://user:pass@host/db"`
 
