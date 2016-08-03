@@ -1,4 +1,4 @@
-class PERCaclulator(object):
+class PerformanceMeasureCaclulator(object):
     def __init__(self, stats):
         self.stats = stats
         self.set_game_totals()
@@ -7,6 +7,7 @@ class PERCaclulator(object):
         for team, players in self.stats.items():
             for player_stats in players:
                 player_stats["PER"] = self.calculate_per(team, player_stats)
+                player_stats["PIR"] = self.calculate_pir(player_stats)
 
     def set_game_totals(self):
         self.team_stats = {}
@@ -65,4 +66,13 @@ class PERCaclulator(object):
             + (VOP * (1.0 - DRBP) * (stats.get('DREB', 0)))
             + (VOP * DRBP * stats.get('OREB', 0)) + (VOP * stats.get('STL', 0))
             + (VOP * DRBP * stats.get('BLK', 0)) - personal_foul_stat
+        )
+
+    def calculate_pir(self, stats):
+        return (
+            stats.get('PTS', 0) + stats.get('AST', 0) + stats.get('STL', 0) +
+            stats.get('BLK', 0) + stats.get('PFD', 0)
+        ) - (
+            stats.get('FGA', 0) + stats.get('FTA', 0) + stats.get('TO', 0) +
+            stats.get('BLKD', 0) + stats.get('PF', 0)
         )

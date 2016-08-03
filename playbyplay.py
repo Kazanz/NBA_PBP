@@ -8,10 +8,7 @@ from tqdm import tqdm
 
 from db import player_box_score_table
 from pbp_methods import METHODS
-from per import PERCaclulator
-
-
-ESPN_URL = "http://scores.espn.go.com"
+from performance_measure import PerformanceMeasureCaclulator
 
 
 def make_soup(url):
@@ -33,7 +30,7 @@ def get_home_away(soup):
 def get_play_by_play(gameid):
     "Returns the play-by-play data for a given game id."
 
-    print("Gettting play-by-play for game: {}".format(gameid))
+    print("Getting play-by-play for game: {}".format(gameid))
 
     url = "http://espn.go.com/nba/playbyplay?gameId={}".format(gameid)
     soup = make_soup(url)
@@ -230,7 +227,7 @@ class PlayByPlayToBoxScoreWriter(object):
 
     def add_PER(self, play, box_score):
         stats = self.format_box_score_for_per_calc(play, deepcopy(box_score))
-        calc = PERCaclulator(stats)
+        calc = PerformanceMeasureCaclulator(stats)
         calc.update_stats()
         return calc.stats
 

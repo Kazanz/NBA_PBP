@@ -6,6 +6,13 @@ def get_player(play):
     return " ".join(play.split(' ')[:2]).strip()
 
 
+def add_drawn_foul(play):
+    matches = re.findall('\(.*?draws the foul\)', play)
+    if matches:
+        return {matches[0][1:-16]: {'PFD': 1}}
+    return {}
+
+
 def add_assist(play):
     matches = re.findall('\(.*?assists\)', play)
     if matches:
@@ -16,7 +23,7 @@ def add_assist(play):
 def add_blocked(play):
     matches = re.findall(" .*? .*?'s shot", play)
     if matches:
-        return {matches[0][1:-7]: {'FGA': 1}}
+        return {matches[0][1:-7]: {'FGA': 1, 'BLKD': 1}}
     return {}
 
 
@@ -36,6 +43,8 @@ def other_player_stats(stats, play):
         data = add_blocked(play)
     elif stats.get('TO'):
         data = add_steals(play)
+    elif stats.get('PF'):
+        data = add_drawn_foul(play)
     return data
 
 
