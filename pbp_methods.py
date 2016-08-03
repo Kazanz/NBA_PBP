@@ -89,6 +89,9 @@ def threepoint(play):
 @add_player
 def rebound(play):
     if re.findall('rebound', play):
+        # An unknown rebound that cannot be attributed to any player.
+        if play.split(' ')[1] in ['offensive', 'defensive']:
+            return
         if re.findall('offensive', play):
             return {"OREB": 1, "TREB": 1}
         elif re.findall('defensive', play):

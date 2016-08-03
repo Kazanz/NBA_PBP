@@ -60,55 +60,78 @@ def get_play_by_play(gameid):
 
 class SubstitutionTracker(object):
     """Keeps track of minutes played in the play-by-play for each player."""
-    player_times = {}
-    players_in_game = {}
+    seconds_played_by_player = {}
+    players_in_game = []
+    last_quarter = 1
+    last_time = "12:00"
 
-    def is_substitution(self, play, quarter, time):
+    def __init__(self, gameid):
+        self._set_starters(gameid)
+
+    @property
+    def players_minutes(self):
+        return {k: (v % 60) for k, v in self.seconds_played_by_player.items()}
+
+    def make_substitution(self, play):
         if re.findall('enters the game for', play):
             player1, player2 = play.split(" enters the game for ")
-            self.players_in_game[player1] = {'quarter': quarter, 'time': time}
-            self._update_player_time(player2, quarter, time, entering=False)
-            del self.players_in_game[player2]
+            self.players_in_game.append(player1)
+            self.players_in_game.remove(player2)
+            self.seconds_played_by_player.setdefault(player1, 0)
+            print("SUB", player1, player2)
+            return True
 
-    def update_time(self, player, time, stats):
-        pass
+    def update_minutes_played(self, quarter, time):
+        seconds_elapsed = self._seconds_elapsed(quarter, time)
+        for player in self.players_in_game:
+            self.seconds_played_by_player.setdefault(player, 0)
+            self.seconds_played_by_player[player] += seconds_elapsed
 
-    def _update_player_time(self, player, quarter, time, entering):
-        in_min, in_sec = map(int, self.players_in_game.split(':'))
-        out_min, out_sec = map(int, time.split(':'))
-        play_time = 0
+    def _seconds_elapsed(self, quarter, time):
+        last_min, last_sec = map(int, self.last_time.split(':'))
+        if last_sec == 0:
+            last_min -= 1
+            last_sec = 60
+        self.last_time = time
+        now_min, now_sec = map(int, time.split(':'))
+        quarter_diff = quarter - self.last_quarter
+        self.last_quarter = quarter
+        total_seconds = 0
+        if quarter_diff == 1:
+            total_seconds += last_min * 60
+            total_seconds += last_sec
+            quarter_length_min = 12 if quarter <= 4 else 5
+            total_seconds += (quarter_length_min - now_min - 1) * 60
+            total_seconds += 60 - now_sec
+        elif quarter_diff == 0:
+            total_seconds += (last_min - now_min) * 60 + (last_sec - now_sec)
+        return total_seconds
 
-        if player not in self.player_times:  # Is a starter and first sub out.
-            play_time = (quarter - 1) * 12 if quarter > 1 else 0
-            play_time += int(out_min)
-        else:
-            quarter_diff = quarter - self.players_in_game[player]['quarter']
-            if quarter_diff >= 2:
-                play_time += (quarter_diff - 1) * 12
-            if quarter_diff >= 1:
-                play_time += in_min
-            if quarter_diff == 0:
-                play_time += in_min - out_min
-            else:
-                quarter_length_min = 12 if quarter <= 4 else 5
-                play_time += quarter_length_min - out_min
-            # Seconds adjustment.
-            play_time += 1 if 60 - out_sec + in_sec >= 60 else -1
-
-        player_time = self.player_times.setdefault(player, 0)
-        player_time += play_time
-        self.player_times[player] = play_time
+    def _set_starters(self, gameid):
+        url = "http://www.espn.com/nba/boxscore?gameId={}".format(gameid)
+        soup = make_soup(url)
+        data = soup.findAll('div', 'hide-bench')
+        for players in data:
+            for link in [a.attrs['href'] for a in players.findAll('a')[:5]]:
+                soup = make_soup(link)
+                player = soup.find('div', 'mod-content').find('h1').text
+                self.players_in_game.append(player)
 
 
 class PlayByPlayToBoxScoreWriter(object):
-    """Create a running boxscore from play by play data and write it to a db."""
+    """Create a running boxscore from play by play data and write it to a db.
+
+    Not play-by-play does not always provide the player who got a rebound
+    when the rebound is shared by many players, therfore total box scores
+    could be off by a couple rebounds.
+    """
 
     def __init__(self, table, gameid):
         self.table = table
         self.gameid = gameid
         self.pbp_data = get_play_by_play(gameid)
         self.running_box_score = {}
-        self.subtracker = SubstitutionTracker()
+        self.subtracker = SubstitutionTracker(gameid)
 
     def execute(self):
         for play in self.pbp_data:
@@ -124,20 +147,20 @@ class PlayByPlayToBoxScoreWriter(object):
             stats = method(play)
             if stats:
                 return stats
-        print("No stat for: {}".format(play))
+        if not self.subtracker.make_substitution(play):
+            print("No stat for: {}".format(play))
 
     def update_player_stats(self, team, play, play_stats):
         for player, stats in play_stats.items():
-            import pdb; pdb.set_trace();
-            stats['MIN'] = self.get_time(play, player, stats)
+            stats['MIN'] = self.get_time(play, player)
             if player not in self.running_box_score[team]:
                 self.running_box_score[team][player] = stats
             else:
                 self.update_running_box_score(team, player, stats)
 
-    def get_time(self, play, player, stats):
-        self.subtracker.is_substitution(play)
-        self.subtracker.update_times(play['time'])
+    def get_time(self, play, player):
+        self.subtracker.update_minutes_played(play['quarter'], play['time'])
+        return self.subtracker.players_minutes[player]
 
     def update_running_box_score(self, team, player, stats):
         for stat, amount in stats.items():
