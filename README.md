@@ -37,3 +37,9 @@ over the last decade. *It would take two lines of code, but would take a while, 
 *Note: This still does not acquire players minutes at that point in the game so the uPER is not quite accurate.
 I need a slightly more complicated algorithm to extract that info from the play-by-play
 but it shouldn't take more than a couple hours.*
+
+### Debuggging
+
+See what plays are being skipped by the script.
+
+`python playbyplay.py debug`

@@ -44,7 +44,7 @@ class PERCaclulator(object):
         VOP = gm_PTS / (gm_FGA - gm_ORB + gm_TOV + 0.44 * gm_FTA)
         DRBP = (gm_TRB - gm_ORB) / gm_TRB
 
-        min_multiplier = 1.0 / stats.get('MIN', 1)
+        min_multiplier = 1.0 / (stats.get('MIN', 1) or 1)
         assist_multiplier = 2.0 / 3.0 * stats.get('AST', 0)
         tm_assist_to_field_goal = (
             2.0 - factor * tm_AST / tm_FG) * stats.get('FGM', 0)

@@ -1,7 +1,10 @@
+import sys
 import re
+from copy import deepcopy
+from urllib2 import urlopen
 
 from bs4 import BeautifulSoup
-from urllib2 import urlopen
+from tqdm import tqdm
 
 from db import player_box_score_table
 from pbp_methods import METHODS
@@ -62,6 +65,7 @@ class SubstitutionTracker(object):
     """Keeps track of minutes played in the play-by-play for each player."""
     seconds_played_by_player = {}
     players_in_game = []
+    players_ending_last_quarter = []
     last_quarter = 1
     last_time = "12:00"
 
@@ -70,16 +74,53 @@ class SubstitutionTracker(object):
 
     @property
     def players_minutes(self):
-        return {k: (v % 60) for k, v in self.seconds_played_by_player.items()}
+        return {k: (v // 60) for k, v in self.seconds_played_by_player.items()}
 
-    def make_substitution(self, play):
+    def get_players_minutes(self, player):
+        if player not in self.seconds_played_by_player:
+            seconds_elapsed = self._seconds_elapsed(
+                self.last_quarter, self.last_time, last_time="12:00")
+            self.seconds_played_by_player[player] = seconds_elapsed
+        return self.players_minutes[player]
+
+    def check_end_of_quarter(self, play):
+        if re.findall('End of', play):
+            self.players_ending_last_quarter = deepcopy(self.players_in_game)
+            return True
+
+    def make_substitution(self, play, time):
+        self.adjustment = None
         if re.findall('enters the game for', play):
             player1, player2 = play.split(" enters the game for ")
-            self.players_in_game.append(player1)
-            self.players_in_game.remove(player2)
+            if player1 not in self.players_in_game:
+                self.players_in_game.append(player1)
+            if player2 in self.players_in_game:
+                self.players_in_game.remove(player2)
+            else:
+                self.adjustment = self.create_adjustment(player1)
             self.seconds_played_by_player.setdefault(player1, 0)
-            print("SUB", player1, player2)
-            return True
+            return True,
+
+    def create_adjustment(self, player):
+        """When a player is subbed in at the start of a quarter,
+        play by play does not track it.  Therfore we must deduce when
+        this happened by observing when a player is subbed out that we
+        did not think was in the game, and cross-reference that with the
+        players we thought ended the last quarter to adjust the minuted
+        played stat.  This adjustment should be detected on whatever is
+        using this method and adjusted there. (Not the best design pattern,
+        could be refactor)
+
+        :param player: player entering the game.
+        """
+        quarter_length_min = 12 if self.last_quarter <= 4 else 5
+        if player in self.players_ending_last_quarter:
+            time_adjust = quarter_length_min - int(self.last_time.split(':')[0])
+            return {
+                'player': player,
+                'MIN': time_adjust,
+                'quarter': self.last_quarter,
+            }
 
     def update_minutes_played(self, quarter, time):
         seconds_elapsed = self._seconds_elapsed(quarter, time)
@@ -87,8 +128,11 @@ class SubstitutionTracker(object):
             self.seconds_played_by_player.setdefault(player, 0)
             self.seconds_played_by_player[player] += seconds_elapsed
 
-    def _seconds_elapsed(self, quarter, time):
-        last_min, last_sec = map(int, self.last_time.split(':'))
+    def _seconds_elapsed(self, quarter, time, last_time=None):
+        if last_time:
+            last_min, last_sec = map(int, last_time.split(':'))
+        else:
+            last_min, last_sec = map(int, self.last_time.split(':'))
         if last_sec == 0:
             last_min -= 1
             last_sec = 60
@@ -119,14 +163,11 @@ class SubstitutionTracker(object):
 
 
 class PlayByPlayToBoxScoreWriter(object):
-    """Create a running boxscore from play by play data and write it to a db.
+    """Create a running boxscore from play by play data and write it to a db."""
+    rows = []
 
-    Not play-by-play does not always provide the player who got a rebound
-    when the rebound is shared by many players, therfore total box scores
-    could be off by a couple rebounds.
-    """
-
-    def __init__(self, table, gameid):
+    def __init__(self, table, gameid, debug=False):
+        self.debug = debug
         self.table = table
         self.gameid = gameid
         self.pbp_data = get_play_by_play(gameid)
@@ -134,21 +175,39 @@ class PlayByPlayToBoxScoreWriter(object):
         self.subtracker = SubstitutionTracker(gameid)
 
     def execute(self):
-        for play in self.pbp_data:
-            play_stats = self.play_to_stats(play['play'])
+        count = 0
+        for play in tqdm(self.pbp_data, desc="Analyzing Plays"):
+            self.subtracker.update_minutes_played(play['quarter'], play['time'])
+            play_stats = self.play_to_stats(play)
             if play_stats:
+                count += 1
                 team = play['team']
                 self.running_box_score.setdefault(team, {})
                 self.update_player_stats(team, play, play_stats)
-                self.commit_to_db(play, self.running_box_score)
+                box_score = self.add_PER(play, self.running_box_score)
+                self.stage_data(box_score)
+        self.write_to_db()
 
     def play_to_stats(self, play):
-        for method in METHODS:
-            stats = method(play)
-            if stats:
-                return stats
-        if not self.subtracker.make_substitution(play):
-            print("No stat for: {}".format(play))
+        if not self.subtracker.check_end_of_quarter(play['play']) \
+                and not self.is_sub(play):
+            for method in METHODS:
+                stats = method(play['play'])
+                if stats:
+                    return stats
+            if self.debug:
+                print("No stat for: {}".format(play['play']))
+
+    def is_sub(self, play):
+        if self.subtracker.make_substitution(play['play'], play['time']):
+            # Adjust for unrecorded quarter substitutions.
+            adjustment = self.subtracker.adjustment
+            if adjustment:
+                for row in self.rows:
+                    if row['player'] == adjustment['player'] and \
+                            row['quarter'] == adjustment['quarter']:
+                        row['MIN'] -= adjustment['MIN']
+            return True
 
     def update_player_stats(self, team, play, play_stats):
         for player, stats in play_stats.items():
@@ -159,22 +218,21 @@ class PlayByPlayToBoxScoreWriter(object):
                 self.update_running_box_score(team, player, stats)
 
     def get_time(self, play, player):
-        self.subtracker.update_minutes_played(play['quarter'], play['time'])
-        return self.subtracker.players_minutes[player]
+        return self.subtracker.get_players_minutes(player)
 
     def update_running_box_score(self, team, player, stats):
         for stat, amount in stats.items():
             self.running_box_score[team][player].setdefault(stat, amount)
-            self.running_box_score[team][player][stat] += amount
+            if stat == "MIN":
+                self.running_box_score[team][player][stat] = amount
+            else:
+                self.running_box_score[team][player][stat] += amount
 
-    def commit_to_db(self, play, box_score):
-        """Write the box score to the database."""
-        stats = self.format_box_score_for_per_calc(play, box_score)
+    def add_PER(self, play, box_score):
+        stats = self.format_box_score_for_per_calc(play, deepcopy(box_score))
         calc = PERCaclulator(stats)
         calc.update_stats()
-        for stats in calc.stats.values():
-            for player_stat in stats:
-                self.table.insert(player_stat)
+        return calc.stats
 
     def format_box_score_for_per_calc(self, play, box_score):
         stats = {}
@@ -185,9 +243,20 @@ class PlayByPlayToBoxScoreWriter(object):
                 player_stats['team'] = team
                 player_stats['time'] = play['time']
                 player_stats['quarter'] = play['quarter']
-                player_stats['is_home'] = play['home']
                 stats[team].append(player_stats)
         return stats
 
+    def stage_data(self, box_score):
+        """Stage the box score for writing to the database."""
+        for stats in box_score.values():
+            for player_stat in stats:
+                self.rows.append(player_stat)
+
+    def write_to_db(self):
+        for row in tqdm(self.rows, desc="Writing Data"):
+            self.table.insert(row)
+
+
 if __name__ == '__main__':
-    PlayByPlayToBoxScoreWriter(player_box_score_table, '400878160').execute()
+    PlayByPlayToBoxScoreWriter(
+        player_box_score_table, '400878160', debug=len(sys.argv) > 1).execute()
