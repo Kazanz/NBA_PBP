@@ -1,7 +1,7 @@
 # NBA_PBP
 
-This is a proof of concept.  We can scrape real-time player scores of nba games and calculate the unadjusted player effeciency rating (uPER)
-of each player at each moment in the game as well as obtaining this data in realtime.
+This script scrapes ESPN's play-by-play data to get the real-time box scores at the time of each play in the game.
+Additionally it two performance measures for each player: **Unadjusted Player Effeciency Rating (uPER)** and **Performance Index Rating (PIR)**.
 
 # Usage
 
@@ -20,21 +20,22 @@ Ex: `export NBA_DB_URI="mysql://user:pass@host/db"`
 
 ## Realtime data
 
-This currently writes the realtime boxscore and uPER of each player from the end of game 7 of the NBA finals between Cleveland and Goldenstate
-to the `PER_data` table.
+Gets the realtime data from [NBA Starting Five](nbastartingfive.com).  Defaults to Game 7 of the 2016 NBA finals between Cleveland and Goldenstate.
+
+### Usage
 
 1. `python realtime.py`
 
 ## Historical Play-by-Play data
 
-This gets each player's box score as well as their uPER for each moment of the game covered by the play-by-play on `espn.go.com` and saves it to
-the `player_box_score` table. By default it also does Game 7 of the finals, but can be easily automated to get historical records for each game
-over the last decade. *It would take two lines of code, but would take a while, so we need to decide how far back this study should go.*
+Gets historical data from [ESPN](http://www.espn.com/nba/playbyplay?gameId=400878160&period=2#gp-quarter-2).  Defaults to Game 7 of the 2016 NBA finals between Cleveland and Goldenstate.
+
+### Usage
 
 `python playbyplay.py`
 
 ### Debuggging
 
-See what plays are being skipped by the script.
+Not all play-by-play data is relevant to the box scores so some are skipped. To see what plays are being skipped by the script run:
 
 `python playbyplay.py debug`
