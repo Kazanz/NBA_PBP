@@ -9,7 +9,8 @@ Additionally it two performance measures for each player: **Unadjusted Player Ef
 
 1. `git clone git@github.com:Kazanz/NBA_PBP.git`
 2. `virtualenv nba_pbp` (optional)
-3. `pip install -r reqs.txt`
+3. `source nba_php/bin/activate` (optional)
+4. `pip install -r reqs.txt`
 
 ### Database connection
 
