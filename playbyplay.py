@@ -55,7 +55,11 @@ def get_play_by_play(gameid):
                 "home_score": int(home_score),
                 "away_score": int(away_score),
             })
-    return data
+    if data[-1]['away_score'] > data[-1]['home_score']:
+        winner = away
+    else:
+        winner = home
+    return data, home, away, winner
 
 
 class SubstitutionTracker(object):
@@ -167,22 +171,20 @@ class PlayByPlayToBoxScoreWriter(object):
         self.debug = debug
         self.table = table
         self.gameid = gameid
-        self.pbp_data = get_play_by_play(gameid)
+        self.pbp, self.home, self.away, self.winner = get_play_by_play(gameid)
         self.running_box_score = {}
         self.subtracker = SubstitutionTracker(gameid)
 
     def execute(self):
-        count = 0
-        for play in tqdm(self.pbp_data, desc="Analyzing Plays"):
+        for play in tqdm(self.pbp, desc="Analyzing Plays"):
             self.subtracker.update_minutes_played(play['quarter'], play['time'])
             play_stats = self.play_to_stats(play)
             if play_stats:
-                count += 1
                 team = play['team']
                 self.running_box_score.setdefault(team, {})
                 self.update_player_stats(team, play, play_stats)
                 box_score = self.add_PER(play, self.running_box_score)
-                self.stage_data(box_score)
+                self.stage_data(play, box_score)
         self.write_to_db()
 
     def play_to_stats(self, play):
@@ -243,10 +245,14 @@ class PlayByPlayToBoxScoreWriter(object):
                 stats[team].append(player_stats)
         return stats
 
-    def stage_data(self, box_score):
+    def stage_data(self, play, box_score):
         """Stage the box score for writing to the database."""
         for stats in box_score.values():
             for player_stat in stats:
+                player_stat['home'] = player_stat['team'] == self.home
+                player_stat['home_score'] = play['home_score']
+                player_stat['away_score'] = play['away_score']
+                player_stat['winner'] = self.winner
                 self.rows.append(player_stat)
 
     def write_to_db(self):
