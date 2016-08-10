@@ -6,7 +6,7 @@ from urllib2 import urlopen
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from db import player_box_score_table
+from db import player_box_score_table, team_box_score_table
 from pbp_methods import METHODS
 from performance_measure import PerformanceMeasureCaclulator
 
@@ -165,11 +165,13 @@ class SubstitutionTracker(object):
 
 class PlayByPlayToBoxScoreWriter(object):
     """Create a running boxscore from play by play data and write it to a db."""
-    rows = []
 
-    def __init__(self, table, gameid, debug=False):
+    def __init__(self, individual_table, team_table, gameid, debug=False):
         self.debug = debug
-        self.table = table
+        self.rows = []
+        self.aggregate_rows = []
+        self.individual_table = individual_table
+        self.team_table = team_table
         self.gameid = gameid
         self.pbp, self.home, self.away, self.winner = get_play_by_play(gameid)
         self.running_box_score = {}
@@ -184,7 +186,8 @@ class PlayByPlayToBoxScoreWriter(object):
                 self.running_box_score.setdefault(team, {})
                 self.update_player_stats(team, play, play_stats)
                 box_score = self.add_PER(play, self.running_box_score)
-                self.stage_data(play, box_score)
+                self.stage_player_level_data(play, box_score)
+                self.stage_team_level_data(play, box_score)
         self.write_to_db()
 
     def play_to_stats(self, play):
@@ -245,7 +248,7 @@ class PlayByPlayToBoxScoreWriter(object):
                 stats[team].append(player_stats)
         return stats
 
-    def stage_data(self, play, box_score):
+    def stage_player_level_data(self, play, box_score):
         """Stage the box score for writing to the database."""
         for stats in box_score.values():
             for player_stat in stats:
@@ -255,11 +258,35 @@ class PlayByPlayToBoxScoreWriter(object):
                 player_stat['winner'] = self.winner
                 self.rows.append(player_stat)
 
+    def stage_team_level_data(self, play, box_score):
+        """Stage the aggregate team box score for writing to the database."""
+        aggregate_stats = {}
+        uneeded_fields = ['away_score', 'home_score', 'time', 'home', 'quarter',
+                          'winner', 'MIN', 'team', 'player']
+        for team, stats in box_score.items():
+            aggregate_stats.setdefault(team, {})
+            for player_stat in stats:
+                winner = player_stat['winner']
+                time = player_stat['time']
+                for field, value in player_stat.items():
+                    if field in uneeded_fields:
+                        continue
+                    aggregate_stats[team].setdefault(field, 0)
+                    aggregate_stats[team][field] += value
+            aggregate_stats[team]['winner'] = winner
+            aggregate_stats[team]['team'] = team
+            aggregate_stats[team]['time'] = time
+            aggregate_stats[team]['gameid'] = self.gameid
+        self.aggregate_rows += aggregate_stats.values()
+
     def write_to_db(self):
-        for row in tqdm(self.rows, desc="Writing Data"):
-            self.table.insert(row)
+        for row in tqdm(self.rows, desc="Writing Player Data"):
+            self.individual_table.insert(row)
+        for row in tqdm(self.aggregate_rows, desc="Writing Team Data"):
+            self.team_table.insert(row)
 
 
 if __name__ == '__main__':
     PlayByPlayToBoxScoreWriter(
-        player_box_score_table, '400878160', debug=len(sys.argv) > 1).execute()
+        player_box_score_table, team_box_score_table,
+        '400878160', debug=len(sys.argv) > 1).execute()
