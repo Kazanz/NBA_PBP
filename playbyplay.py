@@ -11,6 +11,26 @@ from pbp_methods import METHODS
 from performance_measure import PerformanceMeasureCaclulator
 
 
+def quick_sum(box_score):
+    """DELETE THIS LATER"""
+    in_game = 0
+    for k, v in box_score.items():
+        for k, v in v.items():
+            if v.get('in_game'):
+                in_game += 1
+    return in_game
+
+def quick_names(box_score):
+    """DELETE THIS LATER"""
+    names = {}
+    for team, v in box_score.items():
+        for k, v in v.items():
+            if v.get('in_game'):
+                names.setdefault(team, [])
+                names[team].append(k)
+    return names
+
+
 def make_soup(url):
     return BeautifulSoup(urlopen(url), "lxml")
 
@@ -62,13 +82,38 @@ def get_play_by_play(gameid):
     return data, home, away, winner
 
 
+def get_roster(gameid, home, away):
+    def extract_names(div):
+        names = []
+        for row in div.findAll("tr")[1:]:
+            tds = row.findAll("td")
+            if not tds:
+                continue
+            try:
+                link = tds[0].find("a")["href"]
+            except (TypeError, AttributeError):
+                continue
+            soup = make_soup(link)
+            names.append(soup.div("div", "mod-content")[0].find("h1").text)
+        return names
+
+    roster = {}
+    url = "http://www.espn.com/nba/boxscore?gameId={}".format(gameid)
+    soup = make_soup(url)
+    away_div = soup.find("div", "gamepackage-away-wrap")
+    home_div = soup.find("div", "gamepackage-home-wrap")
+    roster[away] = extract_names(away_div)
+    roster[home] = extract_names(home_div)
+    return roster
+
+
 class SubstitutionTracker(object):
     """Keeps track of minutes played in the play-by-play for each player."""
     seconds_played_by_player = {}
     players_in_game = []
     players_ending_last_quarter = []
-    last_quarter = 1
-    last_time = "12:00"
+    current_quarter = 1
+    current_time = "12:00"
 
     def __init__(self, gameid):
         self._set_starters(gameid)
@@ -80,7 +125,7 @@ class SubstitutionTracker(object):
     def get_players_minutes(self, player):
         if player not in self.seconds_played_by_player:
             seconds_elapsed = self._seconds_elapsed(
-                self.last_quarter, self.last_time, last_time="12:00")
+                self.current_quarter, self.current_time, last_time="12:00")
             self.seconds_played_by_player[player] = seconds_elapsed
         return self.players_minutes[player]
 
@@ -89,39 +134,59 @@ class SubstitutionTracker(object):
             self.players_ending_last_quarter = deepcopy(self.players_in_game)
             return True
 
-    def make_substitution(self, play, time):
-        self.adjustment = None
-        if re.findall('enters the game for', play):
-            player1, player2 = play.split(" enters the game for ")
+    def make_substitution(self, play, running_box_score):
+        self.adjustments = []
+        if re.findall('enters the game for', play['play']):
+            player1, player2 = play['play'].split(" enters the game for ")
             if player1 not in self.players_in_game:
                 self.players_in_game.append(player1)
+            else:
+                self.adjustments.append(self.create_adjustment(player1, -1))
+            running_box_score[play['team']][player1]['in_game'] = True
+
             if player2 in self.players_in_game:
                 self.players_in_game.remove(player2)
             else:
-                self.adjustment = self.create_adjustment(player1)
-            self.seconds_played_by_player.setdefault(player1, 0)
-            return True,
+                self.adjustments.append(self.create_adjustment(player2, 1))
+            running_box_score[play['team']][player2]['in_game'] = False
 
-    def create_adjustment(self, player):
+            self.seconds_played_by_player.setdefault(player1, 0)
+            return True, running_box_score
+        else:
+            player = play.get('player')
+            if player and player not in self.players_in_game:
+                self.players_in_game.append(player)
+        return False, running_box_score
+
+    def assure_player_in_game(self, player):
+        if player not in self.players_in_game:
+            self.players_in_game.append(player)
+            self.adjustments = [self.create_adjustment(player, 1)]
+            return False
+        return True
+
+    def create_adjustment(self, player, modifier):
         """When a player is subbed in at the start of a quarter,
         play by play does not track it.  Therfore we must deduce when
         this happened by observing when a player is subbed out that we
         did not think was in the game, and cross-reference that with the
         players we thought ended the last quarter to adjust the minuted
         played stat.  This adjustment should be detected on whatever is
-        using this method and adjusted there. (Not the best design pattern,
-        could be refactor)
+        using the make_substitution method and adjusted there.
+        (Not the best design pattern, could be refactor)
 
         :param player: player entering the game.
+        :param modifier: 1 or -1 depending on need to add or subtract minutes.
         """
-        quarter_length_min = 12 if self.last_quarter <= 4 else 5
-        if player in self.players_ending_last_quarter:
-            time_adjust = quarter_length_min - int(self.last_time.split(':')[0])
-            return {
-                'player': player,
-                'MIN': time_adjust,
-                'quarter': self.last_quarter,
-            }
+        quarter_length_min = 12 if self.current_quarter <= 4 else 5
+        time_adjust = quarter_length_min - int(
+            self.current_time.split(':')[0])
+        return {
+            'player': player,
+            'MIN': time_adjust * modifier,
+            'quarter': self.current_quarter,
+            'in_game': modifier > 0,
+        }
 
     def update_minutes_played(self, quarter, time):
         seconds_elapsed = self._seconds_elapsed(quarter, time)
@@ -133,14 +198,14 @@ class SubstitutionTracker(object):
         if last_time:
             last_min, last_sec = map(int, last_time.split(':'))
         else:
-            last_min, last_sec = map(int, self.last_time.split(':'))
+            last_min, last_sec = map(int, self.current_time.split(':'))
         if last_sec == 0:
             last_min -= 1
             last_sec = 60
-        self.last_time = time
+        self.current_time = time
         now_min, now_sec = map(int, time.split(':'))
-        quarter_diff = quarter - self.last_quarter
-        self.last_quarter = quarter
+        quarter_diff = quarter - self.current_quarter
+        self.current_quarter = quarter
         total_seconds = 0
         if quarter_diff == 1:
             total_seconds += last_min * 60
@@ -174,8 +239,17 @@ class PlayByPlayToBoxScoreWriter(object):
         self.team_table = team_table
         self.gameid = gameid
         self.pbp, self.home, self.away, self.winner = get_play_by_play(gameid)
-        self.running_box_score = {}
         self.subtracker = SubstitutionTracker(gameid)
+        self.running_box_score = self._default_running_box_score()
+        self.made_a_play_this_quarter = []
+
+    def _default_running_box_score(self):
+        roster = get_roster(self.gameid, self.home, self.away)
+        for team in roster.keys():
+            roster[team] = {name: {
+                'in_game': name in self.subtracker.players_in_game
+            } for name in roster[team]}
+        return roster
 
     def execute(self):
         for play in tqdm(self.pbp, desc="Analyzing Plays"):
@@ -201,23 +275,46 @@ class PlayByPlayToBoxScoreWriter(object):
                 print("No stat for: {}".format(play['play']))
 
     def is_sub(self, play):
-        if self.subtracker.make_substitution(play['play'], play['time']):
-            # Adjust for unrecorded quarter substitutions.
-            adjustment = self.subtracker.adjustment
-            if adjustment:
-                for row in self.rows:
-                    if row['player'] == adjustment['player'] and \
-                            row['quarter'] == adjustment['quarter']:
-                        row['MIN'] -= adjustment['MIN']
+        subbed, self.running_box_score = self.subtracker.make_substitution(
+            play, self.running_box_score)
+        if subbed:
+            adjustments = self.subtracker.adjustments
+            if adjustments:
+                if play['play'] == 'J.R. Smith enters the game for Tristan Thompson':
+                    print(quick_names(self.running_box_score))
+                    import pdb; pdb.set_trace();
+                for adjustment in adjustments:
+                    self.make_adjustment(adjustment)
+
+
+            ig = quick_sum(self.running_box_score)
+            if ig != 10:
+                import pdb; pdb.set_trace();
+
+            print(play['play'], ig, bool(self.subtracker.adjustments))
             return True
 
     def update_player_stats(self, team, play, play_stats):
         for player, stats in play_stats.items():
             stats['MIN'] = self.get_time(play, player)
+
+            ###########
+            if not self.subtracker.assure_player_in_game(player):
+                self.make_adjustment(self.subtracker.adjustments[0])
+            ###########
+
             if player not in self.running_box_score[team]:
                 self.running_box_score[team][player] = stats
             else:
                 self.update_running_box_score(team, player, stats)
+
+    def make_adjustment(self, adjustment):
+        for row in self.rows:
+            if row['player'] == adjustment['player'] and \
+                    row['quarter'] == adjustment['quarter']:
+                row.setdefault('MIN', 0)
+                row['MIN'] += adjustment['MIN']
+                row['in_game'] = adjustment['in_game']
 
     def get_time(self, play, player):
         return self.subtracker.get_players_minutes(player)
@@ -250,6 +347,8 @@ class PlayByPlayToBoxScoreWriter(object):
 
     def stage_player_level_data(self, play, box_score):
         """Stage the box score for writing to the database."""
+        if self._duplicate_time(box_score.values()[0], self.rows):
+            self._remove_last_staged_row()
         for stats in box_score.values():
             for player_stat in stats:
                 player_stat['home'] = player_stat['team'] == self.home
@@ -257,6 +356,26 @@ class PlayByPlayToBoxScoreWriter(object):
                 player_stat['away_score'] = play['away_score']
                 player_stat['winner'] = self.winner
                 self.rows.append(player_stat)
+
+    def _duplicate_time(self, stats, rows):
+        """When shooting freethrows (and other instances) multiple recorded
+        plays can happend at the same time.  Therefore we just record the
+        last play at that time in that quarter.  We use the staged row for
+        this purpose."""
+        if not rows or not stats:
+            return False
+        for key in ['quarter', 'time']:
+            if stats[0][key] != rows[-1][key]:
+                return False
+        return True
+
+    def _remove_last_staged_row(self):
+        quarter = self.rows[-1]['quarter']
+        time = self.rows[-1]['time']
+        for i in range(len(self.rows)-1, 0, -1):
+            row = self.rows[i]
+            if row['quarter'] == quarter and row['time'] == time:
+                del self.rows[i]
 
     def stage_team_level_data(self, play, box_score):
         """Stage the aggregate team box score for writing to the database."""
@@ -284,6 +403,7 @@ class PlayByPlayToBoxScoreWriter(object):
             self.individual_table.insert(row)
         for row in tqdm(self.aggregate_rows, desc="Writing Team Data"):
             self.team_table.insert(row)
+
 
 
 if __name__ == '__main__':
