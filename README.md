@@ -1,5 +1,7 @@
 # NBA_PBP
 
+**I am currently making updates.  THis build is broken!!!! Please revert to a safe commit**
+
 This script scrapes ESPN's play-by-play data to get the real-time box scores at the time of each play in the game.
 Additionally it two performance measures for each player: **Unadjusted Player Effeciency Rating (uPER)** and **Performance Index Rating (PIR)**.
 
