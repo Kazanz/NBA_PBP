@@ -105,7 +105,7 @@ class PlayByPlayToBoxScoreWriter(object):
         self.players_in_game = self.set_starters(gameid)
         self.quarter_starters = {1: deepcopy(self.players_in_game)}
         self.players_ending_last_quarter = {}
-        self.made_a_play_this_quarter = []
+        self.in_a_play_this_quarter = []
         self.current_quarter = 1
         self.current_time = "12:00"
 
@@ -122,22 +122,25 @@ class PlayByPlayToBoxScoreWriter(object):
 
     def execute(self):
         for play in tqdm(self.pbp, desc="Analyzing Plays"):
+            print(play['play'])
             stats = self.handle_play(play)
             if not stats:
+                self.print_min_check("Leandro Barbosa", 2, "11:41")
                 continue
             self.update_player_stats(stats)
             formatted = self.format_box_score(play, self.running_box_score)
             self.stage_player_level_data(play, formatted)
             self.assure_players_in_game(stats)
-            #self.print_bad_time(4, "11:33", 6)
-            print(self.quick_sum(), self.quick_names())
+            self.print_min_check("Leandro Barbosa", 2, "11:41")
         self.write_to_db()
 
     def handle_play(self, play):
         self.update_minutes_played(play['quarter'], play['time'])
-        if self.end_of_quarter(play):
+        if self.end_of_game(play):
             return
-        if self.make_sub(play):
+        elif self.end_of_quarter(play):
+            return
+        elif self.make_sub(play):
             return
         return self.play_to_stats(play)
 
@@ -151,7 +154,7 @@ class PlayByPlayToBoxScoreWriter(object):
 
     def update_player_stats(self, play_stats):
         for player, stats in play_stats.items():
-            self.made_a_play_this_quarter.append(player)
+            self.in_a_play_this_quarter.append(player)
             self.update_running_box_score(self.get_team(player), player, stats)
 
     def get_team(self, player):
@@ -172,8 +175,6 @@ class PlayByPlayToBoxScoreWriter(object):
     def format_box_score(self, play, box_score):
         stats = {}
         box_score = deepcopy(box_score)
-        if play['quarter'] == 4:
-            import pdb; pdb.set_trace();
         for team, players_stats in box_score.items():
             stats.setdefault(team, [])
             for player, player_stats in players_stats.items():
@@ -247,6 +248,9 @@ class PlayByPlayToBoxScoreWriter(object):
     def write_to_db(self):
         # This needs to happen here.
         # box_score = self.add_perf_measures(formatted)
+
+        # When orderingmake sure all players get at least a 1 for their minutes
+        # and adjust negatives to their last value.
         for row in tqdm(self.rows, desc="Writing Player Data"):
             self.individual_table.insert(row)
         for row in tqdm(self.aggregate_rows, desc="Writing Team Data"):
@@ -317,12 +321,15 @@ class PlayByPlayToBoxScoreWriter(object):
     # SUBSTITUTION CODE #
     #####################
 
+    def end_of_game(self, play):
+        return re.findall('End of Game', play['play'])
+
     def end_of_quarter(self, play):
         if re.findall('End of', play['play']):
             self.check_for_inactive_players(play['quarter'])
             players = deepcopy(self.players_in_game)
             self.players_ending_last_quarter[play['quarter']] = players
-            self.made_a_play_this_quarter = []
+            self.in_a_play_this_quarter = []
             return True
 
     def check_for_inactive_players(self, quarter):
@@ -333,13 +340,17 @@ class PlayByPlayToBoxScoreWriter(object):
         if quarter == 1:
             return
         for player in self.players_in_game:
-            if player not in self.made_a_play_this_quarter:
+            if player not in self.in_a_play_this_quarter:
                 self.players_in_game.remove(player)
                 self.make_adjustment(self.create_adjustment(player, 0))  # TODO: CHECK IF THIS EFFECTS MINUTES
+                print("DIDNT DO NOTHING", player)
+
 
     def make_sub(self, play):
         if re.findall('enters the game for', play['play']):
             player1, player2 = play['play'].split(" enters the game for ")
+            self.in_a_play_this_quarter.append(player1)
+            self.in_a_play_this_quarter.append(player2)
             self.sub_in(play['team'], player1)
             self.sub_out(play['team'], player2)
             return True
@@ -373,6 +384,8 @@ class PlayByPlayToBoxScoreWriter(object):
                 row.setdefault('MIN', 0)
                 row['MIN'] += adjustment['MIN']
                 row['in_game'] = adjustment['in_game']
+        seconds = adjustment['MIN'] * 60
+        self.seconds_played_by_player[adjustment['player']] += seconds
 
     def create_adjustment(self, player, modifier):
         """When a player is subbed in at the start of a quarter,
@@ -437,6 +450,13 @@ class PlayByPlayToBoxScoreWriter(object):
                 time = row['time']
                 in_game = int(row.get('in_game', 0))
 
+    def print_min_check(self, player, quarter, time):
+        for row in self.rows:
+            if row['quarter'] == quarter and row['time'] == time \
+                    and row['player'] == player:
+                print(row['player'], row['MIN'])
+                return
+
     def print_bad_time(self, quarter, time, bad_num):
         players = {}
         count = 0
@@ -450,8 +470,8 @@ class PlayByPlayToBoxScoreWriter(object):
         pprint(count)
         pprint(players)
         #pprint(self.players_in_game)
-        if count != 10 and count != 0 and quarter == 4:
-            sys.exit()
+        #if count == bad_num and row['quarter'] == quarter:
+        #    sys.exit()
 
 
 if __name__ == '__main__':
