@@ -1,5 +1,6 @@
 import sys
 import re
+from collections import OrderedDict
 from copy import deepcopy
 from urllib2 import urlopen
 
@@ -8,7 +9,7 @@ from tqdm import tqdm
 
 from db import player_box_score_table, team_box_score_table
 from pbp_methods import METHODS
-from performance_measure import PerformanceMeasureCaclulator
+from performance_measure import PlayByPlayPerformanceMeasureCalculator
 
 
 def make_soup(url):
@@ -88,7 +89,12 @@ def get_roster(gameid, home, away):
 
 
 class PlayByPlayToBoxScoreWriter(object):
-    """Create a running boxscore from play by play data and write it to a db."""
+    """Create a running boxscore from play by play data and write it to a db.
+
+    NOTE: Minutes are now calculated after the fact, so the minute
+    recalculating during the initial read is uncesserary, just havn't
+    removed it.
+    """
 
     def __init__(self, individual_table, team_table, gameid, debug=False):
         # General
@@ -122,17 +128,17 @@ class PlayByPlayToBoxScoreWriter(object):
 
     def execute(self):
         for play in tqdm(self.pbp, desc="Analyzing Plays"):
-            print(play['play'])
             stats = self.handle_play(play)
             if not stats:
-                self.print_min_check("Leandro Barbosa", 2, "11:41")
                 continue
             self.update_player_stats(stats)
             formatted = self.format_box_score(play, self.running_box_score)
             self.stage_player_level_data(play, formatted)
             self.assure_players_in_game(stats)
-            self.print_min_check("Leandro Barbosa", 2, "11:41")
-        self.write_to_db()
+        self.rows = self.add_minutes_played(self.rows)
+        self.rows = self.add_perf_measures(self.rows)
+        self.write_player_data()
+        self.write_team_data()
 
     def handle_play(self, play):
         self.update_minutes_played(play['quarter'], play['time'])
@@ -187,7 +193,6 @@ class PlayByPlayToBoxScoreWriter(object):
                 stats[team].append(player_stats)
         return stats
 
-    ############ THIS MUST BE CALCULATED AFTER THE FACT ################## CUZ OF SUBS
     def stage_player_level_data(self, play, box_score):
         """Stage the box score for writing to the database."""
         if self._duplicate_time(box_score.values()[0], self.rows):
@@ -221,45 +226,113 @@ class PlayByPlayToBoxScoreWriter(object):
             if row['quarter'] == quarter and row['time'] == time:
                 del self.rows[i]
 
-    def stage_team_level_data(self, box_score):
+    def write_team_data(self):
         """Stage the aggregate team box score for writing to the database."""
-        aggregate_stats = {}
+        order = ['gameid', 'quarter', 'time', 'team', 'MIN', 'PTS', 'FGM',
+                 'FGA', '3PM', '3PA', 'FTM', 'PTA', 'TREB', 'OREB', 'DREB',
+                 'AST', 'STL', 'BLK', 'TO', 'PF', 'PFD', 'winner']
         uneeded_fields = ['away_score', 'home_score', 'time', 'home', 'quarter',
-                          'winner', 'MIN', 'team', 'player']
-        for team, stats in box_score.items():
-            aggregate_stats.setdefault(team, {})
-            for player_stat in stats:
-                winner = player_stat['winner']
-                time = player_stat['time']
-                for field, value in player_stat.items():
-                    if field in uneeded_fields:
-                        continue
-                    aggregate_stats[team].setdefault(field, 0)
-                    try:
-                        aggregate_stats[team][field] += value
-                    except TypeError:
-                        del aggregate_stats[team][field]
-            aggregate_stats[team]['winner'] = winner
-            aggregate_stats[team]['team'] = team
-            aggregate_stats[team]['time'] = time
-            aggregate_stats[team]['gameid'] = self.gameid
-        self.aggregate_rows += aggregate_stats.values()
+                          'winner', 'MIN', 'team', 'player', 'play', 'gameid',
+                          'in_game']
+        last_quarter = None
+        last_time = None
+        aggregates = {self.home: {}, self.away: {}}
+        for row in tqdm(self.rows, desc="Writing team data"):
+            quarter = row['quarter']
+            time = row['time']
+            team = row['team']
+            if last_quarter is None:
+                last_quarter = quarter
+                last_time = time
+            elif quarter != last_quarter or time != last_time:
+                last_quarter = quarter
+                last_time = time
+                for stats in aggregates.values():
+                    self.team_table.insert(self.order_row(stats, order))
+                aggregates = {self.home: {}, self.away: {}}
+            for field, value in row.items():
+                if field in uneeded_fields:
+                    continue
+                aggregates[team].setdefault(field, 0)
+                try:
+                    aggregates[team][field] += value
+                except TypeError:
+                    del aggregates[team][field]
+                aggregates[team]['winner'] = row['winner']
+                aggregates[team]['team'] = row['team']
+                aggregates[team]['time'] = row['time']
+                aggregates[team]['quarter'] = row['quarter']
+                aggregates[team]['gameid'] = self.gameid
 
-    def write_to_db(self):
-        # This needs to happen here.
-        # box_score = self.add_perf_measures(formatted)
 
-        # When orderingmake sure all players get at least a 1 for their minutes
-        # and adjust negatives to their last value.
+    def write_player_data(self):
+        order = ['gameid', 'quarter', 'time', 'team', 'player', 'in_game',
+                 'uPER', 'PIR', 'MIN', 'PTS', 'FGM', 'FGA', '3PM', '3PA', 'FTM',
+                 'PTA', 'TREB', 'OREB', 'DREB', 'AST', 'STL', 'BLK', 'TO', 'PF',
+                 'PFD', 'home', 'home_score', 'away_score', 'winner', 'play']
         for row in tqdm(self.rows, desc="Writing Player Data"):
-            self.individual_table.insert(row)
-        for row in tqdm(self.aggregate_rows, desc="Writing Team Data"):
-            self.team_table.insert(row)
+            row['gameid'] = self.gameid
+            self.individual_table.insert(self.order_row(row, order))
+
+    def order_row(self, row, order):
+        row['gameid'] = self.gameid
+        data = OrderedDict()
+        for field in order:
+            data[field] = row.get(field, 0)
+        return data
+
+    def add_minutes_played(self, rows):
+        first_play_time = rows[0]['time']
+        players = reduce(lambda x, y: x.keys() + y.keys(), self.roster.values())
+        # Not efficient, but easier to think about.
+        for player in tqdm(players, desc="Calculating MIN"):
+            players_seconds = 0
+            last_time = "12:00"
+            last_quarter = 1
+            in_game = False
+            for row in rows:
+                if row['player'] != player:
+                    continue
+                elif not row['in_game']:
+                    last_time = row['time']
+                    last_quarter = row['quarter']
+                    row['MIN'] = self.seconds_to_minutes(players_seconds)
+                    in_game = False
+                    continue
+                elif not in_game and row['time'] != first_play_time:
+                    last_time = row['time']
+                    last_quarter = row['quarter']
+                    row['MIN'] = self.seconds_to_minutes(players_seconds)
+                    in_game = True
+                    continue
+                else:
+                    quarter = row['quarter']
+                    time = row['time']
+                    players_seconds += self.calc_seconds(
+                        quarter, time, last_quarter, last_time)
+                    row['MIN'] = self.seconds_to_minutes(players_seconds)
+                    last_time = row['time']
+                    last_quarter = row['quarter']
+        return rows
+
+    def calc_seconds(self, quarter, time, last_quarter, last_time):
+        if last_quarter != quarter:
+            last_time = "12:00" if quarter <= 4 else "5:00"
+        last_min, last_sec = map(int, last_time.split(':'))
+        if last_sec == 0:
+            last_min -= 1
+            last_sec = 60
+        now_min, now_sec = map(int, time.split(':'))
+        return (last_min - now_min) * 60 + (last_sec - now_sec)
+
+    def seconds_to_minutes(self, seconds):
+        if seconds == 0:
+            return 0
+        return (seconds // 60) or 1
 
     def add_perf_measures(self, stats):
-        calc = PerformanceMeasureCaclulator(stats)
-        calc.update_stats()
-        return calc.stats
+        calc = PlayByPlayPerformanceMeasureCalculator(self.rows)
+        return calc.update_rows()
 
     #####################
     # MIN TRACKING CODE #
@@ -342,8 +415,7 @@ class PlayByPlayToBoxScoreWriter(object):
         for player in self.players_in_game:
             if player not in self.in_a_play_this_quarter:
                 self.players_in_game.remove(player)
-                self.make_adjustment(self.create_adjustment(player, 0))  # TODO: CHECK IF THIS EFFECTS MINUTES
-                print("DIDNT DO NOTHING", player)
+                self.make_adjustment(self.create_adjustment(player, 0))
 
 
     def make_sub(self, play):
@@ -409,69 +481,6 @@ class PlayByPlayToBoxScoreWriter(object):
             'quarter': self.current_quarter,
             'in_game': modifier > 0,
         }
-
-    #################
-    # FOR DEBUGGING #
-    #################
-
-    def quick_sum(self):
-        """DELETE THIS LATER"""
-        in_game = 0
-        for k, v in self.running_box_score.items():
-            for k, v in v.items():
-                if v.get('in_game'):
-                    in_game += 1
-        return in_game
-
-    def quick_names(self):
-        """DELETE THIS LATER"""
-        names = {}
-        for team, v in self.running_box_score.items():
-            for k, v in v.items():
-                if v.get('in_game'):
-                    names.setdefault(team, [])
-                    names[team].append(k)
-        return names
-
-    def print_faulty_time(self):
-        """DELETE THIS LATER: Finds time when the wrong amount of players
-        are in the game."""
-        quarter = None
-        time = None
-        in_game = 0
-        for row in self.rows:
-            if row['quarter'] == quarter and row['time'] == time:
-                in_game += int(row.get('in_game', 0))
-            else:
-                if quarter is not None and time is not None and in_game != 10:
-                    print("FAULT:", quarter, time, in_game)
-                    sys.exit()
-                quarter = row['quarter']
-                time = row['time']
-                in_game = int(row.get('in_game', 0))
-
-    def print_min_check(self, player, quarter, time):
-        for row in self.rows:
-            if row['quarter'] == quarter and row['time'] == time \
-                    and row['player'] == player:
-                print(row['player'], row['MIN'])
-                return
-
-    def print_bad_time(self, quarter, time, bad_num):
-        players = {}
-        count = 0
-        for row in self.rows:
-            if row['quarter'] == quarter and row['time'] == time:
-                if row.get('in_game'):
-                    count += 1
-                    players.setdefault(row['team'], [])
-                    players[row['team']].append(row['player'])
-        from pprint import pprint
-        pprint(count)
-        pprint(players)
-        #pprint(self.players_in_game)
-        #if count == bad_num and row['quarter'] == quarter:
-        #    sys.exit()
 
 
 if __name__ == '__main__':
