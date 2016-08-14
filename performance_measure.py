@@ -1,3 +1,6 @@
+from collections import OrderedDict
+
+
 class PerformanceMeasureCaclulator(object):
     def __init__(self, stats):
         self.stats = stats
@@ -100,8 +103,8 @@ class PlayByPlayPerformanceMeasureCalculator(PerformanceMeasureCaclulator):
     def get_stats(self):
         last_quarter = None
         last_time = None
-        time_stats = {}
-        stats = {}
+        time_stats = OrderedDict()
+        stats = OrderedDict()
         for row in self.rows:
             quarter = row['quarter']
             time = row['time']
@@ -110,9 +113,9 @@ class PlayByPlayPerformanceMeasureCalculator(PerformanceMeasureCaclulator):
                 last_quarter = quarter
                 last_time = time
             elif quarter != last_quarter or time != last_time:
+                stats["{},{}".format(last_quarter, last_time)] = time_stats
                 last_quarter = quarter
                 last_time = time
-                stats["{},{}".format(quarter, time)] = time_stats
                 time_stats = {}
             time_stats.setdefault(team, [])
             time_stats[team].append(row)

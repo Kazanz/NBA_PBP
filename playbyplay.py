@@ -136,7 +136,9 @@ class PlayByPlayToBoxScoreWriter(object):
             self.stage_player_level_data(play, formatted)
             self.assure_players_in_game(stats)
         self.rows = self.add_minutes_played(self.rows)
+        print(self.rows[0])
         self.rows = self.add_perf_measures(self.rows)
+        print(self.rows[0])
         self.write_player_data()
         self.write_team_data()
 
