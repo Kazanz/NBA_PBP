@@ -7,13 +7,20 @@ from urllib2 import urlopen
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from db import player_box_score_table, team_box_score_table
+from db import player_box_score_table, team_box_score_table, game_table
 from pbp_methods import METHODS
 from performance_measure import PlayByPlayPerformanceMeasureCalculator
 
 
+class BadGameIDError(Exception):
+    pass
+
+
 def make_soup(url):
-    return BeautifulSoup(urlopen(url), "lxml")
+    res = urlopen(url)
+    if res.url == 'http://www.espn.com/nba/scoreboard':
+        raise BadGameIDError("Not a valid gameid")
+    return BeautifulSoup(res, "lxml")
 
 
 def get_team(row):
@@ -49,7 +56,7 @@ def get_play_by_play(gameid):
             data.append({
                 "time": row[0].string,
                 "quarter": quarter,
-                "play": row[2].string.replace(u"\xa0", u""),
+                "play": row[2].string.replace(u"\xa0", u"").strip(' .!?,'),
                 "team": team,
                 'home': team == home,
                 'away': team == away,
@@ -96,13 +103,15 @@ class PlayByPlayToBoxScoreWriter(object):
     removed it.
     """
 
-    def __init__(self, individual_table, team_table, gameid, debug=False):
+    def __init__(self, individual_table, team_table, game_table, gameid,
+                 debug=False):
         # General
         self.debug = debug
         self.rows = []
         self.aggregate_rows = []
         self.individual_table = individual_table
         self.team_table = team_table
+        self.game_table = game_table
         self.gameid = gameid
         self.pbp, self.home, self.away, self.winner = get_play_by_play(gameid)
 
@@ -131,14 +140,18 @@ class PlayByPlayToBoxScoreWriter(object):
             stats = self.handle_play(play)
             if not stats:
                 continue
-            self.update_player_stats(stats)
+            try:
+                self.update_player_stats(stats)
+            except KeyError:
+                # Not a real player.  Most likely a team rebound.
+                print("Can't update stats: {}".format(stats))
+                continue
             formatted = self.format_box_score(play, self.running_box_score)
             self.stage_player_level_data(play, formatted)
             self.assure_players_in_game(stats)
         self.rows = self.add_minutes_played(self.rows)
-        print(self.rows[0])
         self.rows = self.add_perf_measures(self.rows)
-        print(self.rows[0])
+        self.write_game_data(self.gameid)
         self.write_player_data()
         self.write_team_data()
 
@@ -227,6 +240,25 @@ class PlayByPlayToBoxScoreWriter(object):
             row = self.rows[i]
             if row['quarter'] == quarter and row['time'] == time:
                 del self.rows[i]
+
+    def write_game_data(self, gameid):
+        soup = make_soup("http://www.espn.com/nba/game?gameId={}".format(gameid))
+        date = soup.find('title').text.split('-')
+        if date:
+            date = date[-2].strip()
+        location = soup.find(
+            "div", "location-details").find('li').text.strip("\t\n")
+        attendance = re.sub("[^0-9]", "", soup.find('div', 'capacity').text)
+        capacity = re.sub(
+            "[^0-9]", "",
+            soup.find('div', 'attendance').find('div', 'capacity').text
+        )
+        refs = soup.findAll("div", "game-info-note")
+        if refs:
+            refs = refs[-1].find('span').text
+        self.game_table.insert(dict(gameid=gameid, date=date, location=location,
+                                   attendance=attendance, capacity=capacity,
+                                   refs=refs))
 
     def write_team_data(self):
         """Stage the aggregate team box score for writing to the database."""
@@ -485,7 +517,54 @@ class PlayByPlayToBoxScoreWriter(object):
         }
 
 
+def write_errored(gameid, filename, method="a"):
+    with open(filename, method) as f:
+        f.write(str(gameid) + ",")
+
+
+def write_many(amount):
+    def stop(completed, amount, last_gameid, max_gameid):
+        return amount == completed if amount else last_gameid == max_gameid
+
+    with open("error_gameids.txt", "r") as f:
+        errors = set(f.readlines()[0].split(','))
+        write_errored(",".join(errors), "error_gameids.txt", "w")
+    with open("skipped_gameids.txt", "r") as f:
+        skip = set(f.readlines()[0].split(','))
+        write_errored(",".join(skip), "skipped_gameids.txt", "w")
+    skip.update(errors)
+
+    min_gameid, max_gameid = (271102003, 400878160)
+    completed = 0
+    gameid = min_gameid - 1
+    while not stop(completed, amount, gameid, max_gameid):
+        gameid += 1
+        if gameid in skip:
+            continue
+        try:
+            PlayByPlayToBoxScoreWriter(
+                player_box_score_table, team_box_score_table, game_table,
+                gameid, debug=len(sys.argv) > 2).execute()
+        except BadGameIDError:
+            write_errored(gameid, "skipped_gameids.txt")
+        except KeyError as e:
+            print("A key error occured in game: {}!".format(gameid))
+            print(e.message)
+            write_errored(gameid, "error_gameids.txt")
+        except AttributeError as e:
+            print("An attribute error occured in game: {}!".format(gameid))
+            print(e.message)
+            write_errored(gameid, "error_gameids.txt")
+        completed += 1
+
 if __name__ == '__main__':
-    PlayByPlayToBoxScoreWriter(
-        player_box_score_table, team_box_score_table,
-        '400878160', debug=len(sys.argv) > 1).execute()
+    """Known Errors:
+
+    1. Players whos name on espn.com profile do not match their
+    play-by-play name will throw and error and the game will be ignored.
+    (Perhaps we could do a closest match algorithm to the name? like take
+    streaks of letters and add them together or something?)
+
+    2. Sometimes the "home team" cannot be found.  Not sure why yet.
+    """
+    write_many(sys.argv[1] if len(sys.argv) > 1 else None)

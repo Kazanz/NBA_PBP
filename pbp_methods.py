@@ -3,7 +3,7 @@ from collections import OrderedDict
 
 
 def get_player(play):
-    return " ".join(play.split(' ')[:2]).strip()
+    return " ".join(play.split(' ')[:2]).strip(" .,!?")
 
 
 def add_drawn_foul(play):
