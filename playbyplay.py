@@ -282,6 +282,7 @@ class PlayByPlayToBoxScoreWriter(object):
                 last_quarter = quarter
                 last_time = time
                 for stats in aggregates.values():
+                    import pdb; pdb.set_trace();
                     self.team_table.insert(self.order_row(stats, order))
                 aggregates = {self.home: {}, self.away: {}}
             for field, value in row.items():
@@ -304,9 +305,64 @@ class PlayByPlayToBoxScoreWriter(object):
                  'uPER', 'PIR', 'MIN', 'PTS', 'FGM', 'FGA', '3PM', '3PA', 'FTM',
                  'PTA', 'TREB', 'OREB', 'DREB', 'AST', 'STL', 'BLK', 'TO', 'PF',
                  'PFD', 'home', 'home_score', 'away_score', 'winner', 'play']
+        staged_rows = []
+        written_rows = False
         for row in tqdm(self.rows, desc="Writing Player Data"):
+            # Need somethign for first write.
             row['gameid'] = self.gameid
-            self.individual_table.insert(self.order_row(row, order))
+            row = self.order_row(row, order)
+            if not staged_rows or staged_rows[0]['time'] == row['time']:
+                # Matches so keep adding to staged
+                staged_rows.append(row)
+            else:
+                # No Match so get the times in between and copy the staged rows
+                # to each of those times.
+                skipped_times = self._times_between_times(
+                    staged_rows[0]['time'], row['time'],
+                    staged_rows[0]['quarter'], row['quarter']
+                )
+                if not written_rows:
+                    self.write_from_game_start(staged_rows, order, 6, 25)
+                    written_rows = True
+                for staged_row in staged_rows:
+                    self.individual_table.insert(staged_row)
+                for quarter, time in skipped_times:
+                    for staged_row in staged_rows:
+                        staged_row['quarter'] = quarter
+                        staged_row['time'] = time
+                        staged_row['play'] = None
+                        self.individual_table.insert(row)
+                staged_rows = [row]
+
+    def write_from_game_start(self, rows, order, order_start, order_end):
+        skipped_times = self._times_between_times(
+            "12:00", rows[0]['time'], 1, rows[0]['quarter'])
+        for quarter, time in skipped_times:
+            for row in rows:
+                row = deepcopy(row)
+                row['play'] = None
+                for i in range(order_start, order_end):
+                    row[order[i]] = 0
+                row['home_score'] = 0
+                row['away_score'] = 0
+                self.individual_table.insert(row)
+
+    def _times_between_times(self, first, second, start_quarter, end_quarter):
+        times = []
+        if start_quarter != end_quarter:
+            times += self._times_between_times(
+                first, "0:00", start_quarter, start_quarter)
+            times += self._times_between_times(
+                "12:00", second, end_quarter, end_quarter)
+            return times
+        else:
+            fmin, fsec = map(int, first.split(":"))
+            smin, ssec = map(int, second.split(":"))
+            for m in range(fmin, smin-1, -1):
+                sec_source = 60 if m != fmin else fsec-1
+                sec_target = 0 if m != smin else ssec
+                for s in range(sec_source, sec_target, -1):
+                    times.append((start_quarter, "{}:{}".format(m,s)))
 
     def order_row(self, row, order):
         row['gameid'] = self.gameid
@@ -537,10 +593,15 @@ def write_many(amount):
     min_gameid, max_gameid = (271102003, 400878160)
     completed = 0
     gameid = min_gameid - 1
-    while not stop(completed, amount, gameid, max_gameid):
-        gameid += 1
+    #while not stop(completed, amount, gameid, max_gameid):
+    #    gameid += 1
+    for gameid in [271102003, 400400544, 400878160]:
         if gameid in skip:
             continue
+        PlayByPlayToBoxScoreWriter(
+                player_box_score_table, team_box_score_table, game_table,
+                gameid, debug=len(sys.argv) > 2).execute()
+
         try:
             PlayByPlayToBoxScoreWriter(
                 player_box_score_table, team_box_score_table, game_table,
@@ -566,5 +627,8 @@ if __name__ == '__main__':
     streaks of letters and add them together or something?)
 
     2. Sometimes the "home team" cannot be found.  Not sure why yet.
+
+    3. If the first play takes over a minute to happen, then no player will
+    have correct MIN stats this is highly unlikely due to the 24 shot clock.
     """
     write_many(sys.argv[1] if len(sys.argv) > 1 else None)
