@@ -284,7 +284,8 @@ class PlayByPlayToBoxScoreWriter(object):
                 sec_target = 0 if m != smin else ssec
                 for s in range(sec_source, sec_target, -1):
                     s = str(s) if len(str(s)) == 2 else "0{}".format(s)
-                    times.append((start_quarter, "{}:{}".format(m,s)))
+                    if s != "60":
+                        times.append((start_quarter, "{}:{}".format(m,s)))
         return times
 
     def _rows_from_last_time(self):
