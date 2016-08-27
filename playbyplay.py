@@ -128,6 +128,18 @@ class PlayByPlayToBoxScoreWriter(object):
         self.roster = get_roster(self.gameid, self.home, self.away)
         self.running_box_score = self._default_running_box_score(self.roster)
 
+        # Set stats for Q1 - 12:00
+        play = {
+            "play": "Start of game",
+            "quarter": 1,
+            "time": "12:00",
+            "team": None,
+            "home_score": 0,
+            "away_score": 0,
+        }
+        formatted = self.format_box_score(play, self.running_box_score)
+        self.stage_player_level_data(play, formatted)
+
     def _default_running_box_score(self, roster):
         for team in roster.keys():
             roster[team] = {name: {
@@ -138,7 +150,7 @@ class PlayByPlayToBoxScoreWriter(object):
     def execute(self):
         for play in tqdm(self.pbp, desc="Analyzing Plays"):
             stats = self.handle_play(play)
-            if not stats:
+            if stats is None:
                 continue
             try:
                 self.update_player_stats(stats)
@@ -149,6 +161,7 @@ class PlayByPlayToBoxScoreWriter(object):
             formatted = self.format_box_score(play, self.running_box_score)
             self.stage_player_level_data(play, formatted)
             self.assure_players_in_game(stats)
+        self.fill_in_to_end_of_game()
         self.rows = self.add_minutes_played(self.rows)
         self.rows = self.add_perf_measures(self.rows)
         self.write_game_data(self.gameid)
@@ -162,7 +175,7 @@ class PlayByPlayToBoxScoreWriter(object):
         elif self.end_of_quarter(play):
             return
         elif self.make_sub(play):
-            return
+            return {}
         return self.play_to_stats(play)
 
     def play_to_stats(self, play):
@@ -210,7 +223,10 @@ class PlayByPlayToBoxScoreWriter(object):
 
     def stage_player_level_data(self, play, box_score):
         """Stage the box score for writing to the database."""
+        self.fill_in_missing_times(play['quarter'], play['time'])
         if self._duplicate_time(box_score.values()[0], self.rows):
+            # For plays that happend at the same second.
+            play['play'] += ', {}'.format(self.rows[-1]['play'])
             self._remove_last_staged_row()
         for stats in box_score.values():
             for player_stat in stats:
@@ -220,6 +236,68 @@ class PlayByPlayToBoxScoreWriter(object):
                 player_stat['away_score'] = play['away_score']
                 player_stat['winner'] = self.winner
                 self.rows.append(player_stat)
+
+    def fill_in_to_end_of_game(self):
+        """Fills in the times between last play and end of game."""
+        previous_rows = self._rows_from_last_time()
+        last_quarter = previous_rows[-1]['quarter']
+        last_time = previous_rows[-1]['time']
+        skipped_times = self._times_between_times(
+            last_time, "0:00", last_quarter, 4)
+        for quarter, time in skipped_times:
+            for row in previous_rows:
+                row = {k: v for k, v in row.items()}  # Safe duplicate
+                row['play'] = None
+                row['quarter'] = quarter
+                row['time'] = time
+                self.rows.append(row)
+
+    def fill_in_missing_times(self, quarter, time):
+        """Fills in the times between plays where plays did not happen."""
+        if not self.rows:
+            return
+        previous_rows = self._rows_from_last_time()
+        last_row = self.rows[-1]
+        skipped_times = self._times_between_times(
+            last_row['time'], time, last_row['quarter'], quarter)
+        for quarter, time in skipped_times:
+            for row in previous_rows:
+                row = {k: v for k, v in row.items()}  # Safe duplicate
+                row['play'] = None
+                row['quarter'] = quarter
+                row['time'] = time
+                self.rows.append(row)
+
+    def _times_between_times(self, first, second, start_quarter, end_quarter):
+        times = []
+        if start_quarter != end_quarter:
+            times += self._times_between_times(
+                first, "0:00", start_quarter, start_quarter)
+            times += self._times_between_times(
+                "12:00", second, end_quarter, end_quarter)
+            return times
+        else:
+            fmin, fsec = map(int, first.split(":"))
+            smin, ssec = map(int, second.split(":"))
+            for m in range(fmin, smin-1, -1):
+                sec_source = 60 if m != fmin else fsec-1
+                sec_target = 0 if m != smin else ssec
+                for s in range(sec_source, sec_target, -1):
+                    s = str(s) if len(str(s)) == 2 else "0{}".format(s)
+                    times.append((start_quarter, "{}:{}".format(m,s)))
+        return times
+
+    def _rows_from_last_time(self):
+        rows = []
+        quarter = self.rows[-1]['quarter']
+        time = self.rows[-1]['time']
+        for i in range(len(self.rows)-1, 0, -1):
+            row = self.rows[i]
+            if row['quarter'] == quarter and row['time'] == time:
+                rows.append(row)
+            else:
+                break
+        return rows
 
     def _duplicate_time(self, stats, rows):
         """When shooting freethrows (and other instances) multiple recorded
@@ -240,6 +318,8 @@ class PlayByPlayToBoxScoreWriter(object):
             row = self.rows[i]
             if row['quarter'] == quarter and row['time'] == time:
                 del self.rows[i]
+            else:
+                break
 
     def write_game_data(self, gameid):
         soup = make_soup("http://www.espn.com/nba/game?gameId={}".format(gameid))

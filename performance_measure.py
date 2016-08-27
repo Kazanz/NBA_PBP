@@ -1,5 +1,7 @@
 from collections import OrderedDict
 
+from tqdm import tqdm
+
 
 class PerformanceMeasureCaclulator(object):
     def __init__(self, stats):
@@ -7,7 +9,7 @@ class PerformanceMeasureCaclulator(object):
         self.set_game_totals(self.stats)
 
     def update_stats(self):
-        for team, players in self.stats.items():
+        for team, players in tqdm(self.stats.items(), desc="Added Perf Measures"):
             for player_stats in players:
                 player_stats["PER"] = self.calculate_per(team, player_stats)
                 player_stats["PIR"] = self.calculate_pir(player_stats)
@@ -23,7 +25,7 @@ class PerformanceMeasureCaclulator(object):
                 for stat in player_stats.keys():
                     try:
                         value = float(player_stats[stat])
-                    except ValueError:
+                    except (ValueError, TypeError):
                         continue
                     else:
                         self.team_stats[team].setdefault(stat, 0)
@@ -90,7 +92,7 @@ class PlayByPlayPerformanceMeasureCalculator(PerformanceMeasureCaclulator):
 
     def update_rows(self):
         new_rows = []
-        for time, stats in self.get_stats().items():
+        for time, stats in tqdm(self.get_stats().items(), desc="Calculating Perf"):
             quarter, time = time.split(',')
             self.set_game_totals(stats)
             for row in self.rows:
