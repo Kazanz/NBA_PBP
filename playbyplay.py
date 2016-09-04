@@ -7,9 +7,12 @@ from urllib2 import urlopen
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from db import player_box_score_table, team_box_score_table, game_table
+from db import player_box_score_table, team_box_score_table, game_table, db
 from pbp_methods import METHODS
-from performance_measure import PlayByPlayPerformanceMeasureCalculator
+from performance_measure import (
+    PlayByPlayPerformanceMeasureCalculator,
+    PerformanceMeasureCaclulator,
+)
 
 
 class BadGameIDError(Exception):
@@ -67,6 +70,7 @@ def get_play_by_play(gameid):
         winner = away
     else:
         winner = home
+    print("DONE GETTING FOR: {}".format(gameid))
     return data, home, away, winner
 
 
@@ -105,6 +109,7 @@ class PlayByPlayToBoxScoreWriter(object):
 
     def __init__(self, individual_table, team_table, game_table, gameid,
                  debug=False):
+        print("Initializing")
         # General
         self.debug = debug
         self.rows = []
@@ -117,6 +122,7 @@ class PlayByPlayToBoxScoreWriter(object):
 
         # Sub and Time Tracking
         self.seconds_played_by_player = {}
+        print("Getting starters")
         self.players_in_game = self.set_starters(gameid)
         self.quarter_starters = {1: deepcopy(self.players_in_game)}
         self.players_ending_last_quarter = {}
@@ -125,7 +131,9 @@ class PlayByPlayToBoxScoreWriter(object):
         self.current_time = "12:00"
 
         # Scores
+        print("Getting Roster")
         self.roster = get_roster(self.gameid, self.home, self.away)
+        print("Settings box score")
         self.running_box_score = self._default_running_box_score(self.roster)
 
         # Set stats for Q1 - 12:00
@@ -163,9 +171,9 @@ class PlayByPlayToBoxScoreWriter(object):
             self.assure_players_in_game(stats)
         self.fill_in_to_end_of_game()
         self.rows = self.add_minutes_played(self.rows)
-        self.rows = self.add_perf_measures(self.rows)
+        #self.rows = self.add_perf_measures(self.rows)
         self.write_game_data(self.gameid)
-        self.write_player_data()
+        #self.write_player_data()
         self.write_team_data()
 
     def handle_play(self, play):
@@ -343,12 +351,14 @@ class PlayByPlayToBoxScoreWriter(object):
 
     def write_team_data(self):
         """Stage the aggregate team box score for writing to the database."""
-        order = ['gameid', 'quarter', 'time', 'team', 'MIN', 'PTS', 'FGM',
-                 'FGA', '3PM', '3PA', 'FTM', 'PTA', 'TREB', 'OREB', 'DREB',
-                 'AST', 'STL', 'BLK', 'TO', 'PF', 'PFD', 'winner']
-        uneeded_fields = ['away_score', 'home_score', 'time', 'home', 'quarter',
-                          'winner', 'MIN', 'team', 'player', 'play', 'gameid',
-                          'in_game']
+        perf_measure = PerformanceMeasureCaclulator(None)
+        order = ['gameid', 'quarter', 'time', 'team', 'PIR', 'PTS', 'FGM',
+                 'FGA', '3PM', '3PA', 'FTM', 'FTA', 'TREB', 'OREB', 'DREB',
+                 'AST', 'STL', 'BLK', 'TO', 'PF', 'PFD', 'winning_team',
+                 'winner']
+        uneeded_fields = ['away_score', 'home_score', 'MIN', 'time', 'home',
+                          'quarter', 'winner', 'MIN', 'team', 'player', 'play',
+                          'gameid', 'in_game']
         last_quarter = None
         last_time = None
         aggregates = {self.home: {}, self.away: {}}
@@ -363,6 +373,7 @@ class PlayByPlayToBoxScoreWriter(object):
                 last_quarter = quarter
                 last_time = time
                 for stats in aggregates.values():
+                    stats['PIR'] = perf_measure.calculate_pir(stats)
                     self.team_table.insert(self.order_row(stats, order))
                 aggregates = {self.home: {}, self.away: {}}
             for field, value in row.items():
@@ -373,7 +384,11 @@ class PlayByPlayToBoxScoreWriter(object):
                     aggregates[team][field] += value
                 except TypeError:
                     del aggregates[team][field]
-                aggregates[team]['winner'] = row['winner']
+                if row['winner'] == self.home:
+                    aggregates[team]['winner'] = 'home'
+                else:
+                    aggregates[team]['winner'] = 'away'
+                aggregates[team]['winning_team'] = row['winner']
                 aggregates[team]['team'] = row['team']
                 aggregates[team]['time'] = row['time']
                 aggregates[team]['quarter'] = row['quarter']
@@ -383,7 +398,7 @@ class PlayByPlayToBoxScoreWriter(object):
     def write_player_data(self):
         order = ['gameid', 'quarter', 'time', 'team', 'player', 'in_game',
                  'uPER', 'PIR', 'MIN', 'PTS', 'FGM', 'FGA', '3PM', '3PA', 'FTM',
-                 'PTA', 'TREB', 'OREB', 'DREB', 'AST', 'STL', 'BLK', 'TO', 'PF',
+                 'FTA', 'TREB', 'OREB', 'DREB', 'AST', 'STL', 'BLK', 'TO', 'PF',
                  'PFD', 'home', 'home_score', 'away_score', 'winner', 'play']
         for row in tqdm(self.rows, desc="Writing Player Data"):
             row['gameid'] = self.gameid
@@ -603,40 +618,64 @@ def write_errored(gameid, filename, method="a"):
         f.write(str(gameid) + ",")
 
 
-def write_many(amount):
-    def stop(completed, amount, last_gameid, max_gameid):
-        return amount == completed if amount else last_gameid == max_gameid
-
+def skippable_gameids():
     with open("error_gameids.txt", "r") as f:
         errors = set(f.readlines()[0].split(','))
-        write_errored(",".join(errors), "error_gameids.txt", "w")
+        write_errored(",".join(errors), "error_gameids.txt", "a")
     with open("skipped_gameids.txt", "r") as f:
         skip = set(f.readlines()[0].split(','))
-        write_errored(",".join(skip), "skipped_gameids.txt", "w")
+        write_errored(",".join(skip), "skipped_gameids.txt", "a")
     skip.update(errors)
+    import pdb; pdb.set_trace();
+    return map(int, skip)
 
-    min_gameid, max_gameid = (271102003, 400878160)
-    completed = 0
-    gameid = min_gameid - 1
-    while not stop(completed, amount, gameid, max_gameid):
-        gameid += 1
-        if gameid in skip:
+
+def regular_season_gameids():
+    with open('regular_season_gameids_2007_2016.txt', 'r') as f:
+        return map(int, sorted(f.read().split(',')))
+
+
+def last_written_gameid():
+    return int(
+        db.query('SELECT MAX(gameid) id FROM team_box_score').next()['id'])
+
+
+def write_many(amount):
+    #skip = skippable_gameids()
+    last_gameid = 0 #last_written_gameid()
+    print("last written gameid: {}".format(last_gameid))
+    first_id = None
+    for gameid in regular_season_gameids()[10000:]:
+        if not first_id:
+            first_id = gameid
+        print(first_id)
+        if gameid <= last_gameid:  # or gameid in skip:
             continue
         try:
             PlayByPlayToBoxScoreWriter(
                 player_box_score_table, team_box_score_table, game_table,
                 gameid, debug=len(sys.argv) > 2).execute()
         except BadGameIDError:
+            print("BAD GAME ID")
             write_errored(gameid, "skipped_gameids.txt")
         except KeyError as e:
             print("A key error occured in game: {}!".format(gameid))
+            print(e.message)
+            write_errored(gameid, "error_gameids.txt")
+        except IndexError as e:
+            print("A index error occured in game: {}!".format(gameid))
             print(e.message)
             write_errored(gameid, "error_gameids.txt")
         except AttributeError as e:
             print("An attribute error occured in game: {}!".format(gameid))
             print(e.message)
             write_errored(gameid, "error_gameids.txt")
-        completed += 1
+        except Exception as e:
+            print("Unknown error occured in game: {}!".format(gameid))
+            print(e.message)
+            print(e)
+            write_errored(gameid, "error_gameids.txt")
+
 
 if __name__ == '__main__':
     """Known Errors:
@@ -647,5 +686,11 @@ if __name__ == '__main__':
     streaks of letters and add them together or something?)
 
     2. Sometimes the "home team" cannot be found.  Not sure why yet.
+
+    3. Quarter = 0 gets written sometimes. and the last few seconds don't get
+    written either, so will need a script to adjust for that.
+
+    4. Also not duplicate times when multiple plays happen show up in
+    team box score data"
     """
     write_many(sys.argv[1] if len(sys.argv) > 1 else None)
