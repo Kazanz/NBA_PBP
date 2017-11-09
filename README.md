@@ -1,6 +1,6 @@
 # NBA_PBP
 
-This was the data scraping algorithm used in the paper *Predicting NBA games in realtime: A data snapshot approach* which won best paper award for technical prototype at the 2016 Workshop on Information Technology & Systems (WITS).
+This was the data scraping algorithm used in the paper *Predicting the Winner of an NBA Game in Real-Time: A Data Snapshot Approach* which won best paper award for technical prototype at the 2016 Workshop on Information Technology & Systems (WITS).
 
 The university press release can be found here: http://www.usf.edu/business/news/articles/161221-wits-conference.aspx
 
